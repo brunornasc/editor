@@ -1,0 +1,248 @@
+/* ============================================================================
+ * Visual Studio 2005 Look & Feel (aproximacao)
+ * Paleta base (mesclando VS2005 "Whidbey" com toques do sistema Windows XP):
+ *   - Titulo de dock/tabs: azul      #0E4AA0 / #1E5CB8
+ *   - ABERTURA de janela (3D face): #EFEFEF / #F2F3F5
+ *   - Borda de controle (3D light):     #E8E9EB
+ *   - Borda 3D (3D shadow):             #C8C9CB
+ *   - Texto hover (menu azul):          #2556A3
+ * ==========================================================================*/
+
+QWidget {
+    background-color: #DFE2E6;
+    color: #1A1A1A;
+    font-family: "Segoe UI", "DejaVu Sans", "Arial";
+    font-size: 12px;
+}
+
+QMainWindow::separator {
+    background: #C8C9CB;
+    width: 2px;
+    height: 2px;
+}
+
+QMenuBar {
+    background-color: #EFEFEF;
+    border-bottom: 1px solid #A6A6A6;
+    padding: 1px 4px;
+}
+
+QMenuBar::item {
+    background: transparent;
+    padding: 3px 10px;
+    border-radius: 2px;
+}
+
+QMenuBar::item:selected {
+    background-color: #B9D0F0;
+    color: #0E4AA0;
+}
+
+QMenu {
+    background-color: #FFF;
+    border: 1px solid #959595;
+    padding: 2px;
+}
+
+QMenu::item {
+    padding: 4px 22px 4px 20px;
+    background: transparent;
+}
+
+QMenu::item:selected {
+    background-color: #2556A3;
+    color: #FFFFFF;
+}
+
+QMenu::separator {
+    height: 1px;
+    background: #D7D7D7;
+    margin: 3px 6px;
+}
+
+/* --- Toolbar ------------------------------------------------------------- */
+QToolBar {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #F9F9F9, stop:1 #E3E4E6);
+    border: none;
+    border-bottom: 1px solid #A6A6A6;
+    padding: 2px;
+    spacing: 2px;
+}
+
+QToolBar::handle:horizontal {
+    width: 0px;
+}
+
+QToolButton {
+    background: transparent;
+    border: 1px solid transparent;
+    padding: 3px;
+    border-radius: 2px;
+}
+
+QToolButton:hover {
+    background: #C7D5F0;
+    border: 1px solid #94A9D8;
+}
+
+QToolButton:pressed {
+    background: #ADC4EE;
+}
+
+QToolButton:checked {
+    background: #ADC4EE;
+    border: 1px solid #7E98C6;
+}
+
+/* --- Status bar ---------------------------------------------------------- */
+QStatusBar {
+    background: #EFEFEF;
+    border-top: 1px solid #A6A6A6;
+}
+
+QStatusBar::item {
+    border: none;
+}
+
+QStatusBar QLabel {
+    padding: 0 6px;
+}
+
+/* --- Centro: area de tabs de documentos ----------------------------------- */
+QDockWidget {
+    color: #1A1A1A;
+}
+
+QDockWidget::title {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #7E9ED9, stop:1 #3D6BAE);
+    color: #FFFFFF;
+    padding: 5px 8px;
+    border: 1px solid #2C4E83;
+}
+
+QDockWidget::close-button, QDockWidget::float-button {
+    background: transparent;
+    border: none;
+    padding: 1px;
+}
+
+QDockWidget::close-button:hover, QDockWidget::float-button:hover {
+    background: rgba(255, 255, 255, 40);
+}
+
+QTabWidget::pane {
+    border: 1px solid #9B9B9B;
+    background: #FFFFFF;
+}
+
+QTabBar::tab {
+    background: #E8E9EC;
+    color: #444;
+    border: 1px solid #A6A6A6;
+    border-bottom: none;
+    padding: 4px 12px;
+    margin-right: 2px;
+    border-top-left-radius: 3px;
+    border-top-right-radius: 3px;
+}
+
+QTabBar::tab:selected {
+    background: #FFFFFF;
+    color: #1A1A1A;
+}
+
+QTabBar::tab:hover:!selected {
+    background: #D5DDF0;
+}
+
+/* --- Arvore (Solution Explorer / Class View) ------------------------------ */
+QTreeView {
+    background: #FFFFFF;
+    alternate-background-color: #F6F7F9;
+    border: none;
+    selection-background-color: #2556A3;
+    selection-color: #FFFFFF;
+    outline: none;
+}
+
+QTreeView::item {
+    padding: 2px 0;
+}
+
+QTreeView::branch:has-children:!has-siblings:closed,
+QTreeView::branch:closed:has-children:has-siblings {
+    border-image: none;
+    image: none;
+}
+
+QHeaderView::section {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #F6F7F8, stop:1 #E3E5E8);
+    border: 1px solid #A6A6A6;
+    padding: 3px 6px;
+    font-weight: bold;
+    color: #1A1A1A;
+}
+
+/* --- Navigation bars (CodeEditorWidget) ---------------------------------- */
+QWidget#navigationBar {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #EFF1F4, stop:1 #D9DCE1);
+    border-bottom: 1px solid #A6A6A6;
+}
+
+QWidget#navigationBar QLabel {
+    color: #444;
+    font-weight: bold;
+}
+
+/* --- Combos (navigation bars, toolbar, status) ---------------------------- */
+QComboBox {
+    background: #FFFFFF;
+    border: 1px solid #9B9B9B;
+    padding: 2px 6px;
+    min-height: 18px;
+}
+
+QComboBox:focus, QComboBox:hover {
+    border: 1px solid #1E5CB8;
+}
+
+QComboBox::drop-down {
+    border-left: 1px solid #C0C0C0;
+    width: 18px;
+}
+
+QComboBox::down-arrow {
+    image: none;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 4px solid #444;
+    margin-right: 4px;
+}
+
+QComboBox QAbstractItemView {
+    background: #FFFFFF;
+    border: 1px solid #959595;
+    selection-background-color: #2556A3;
+    selection-color: #FFFFFF;
+    outline: none;
+}
+
+/* --- Texto (areas de output/console) -------------------------------------- */
+QPlainTextEdit, QTextEdit {
+    background: #FFFFFF;
+    border: none;
+    font-family: "Consolas", "DejaVu Sans Mono", "Monospace";
+    font-size: 11px;
+}
+
+/* --- Splitters ------------------------------------------------------------ */
+QSplitter::handle {
+    background: #C8C9CB;
+}
+
+QSplitter::handle:horizontal { width: 3px; }
+QSplitter::handle:vertical   { height: 3px; }

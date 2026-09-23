@@ -1,0 +1,11 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/">
+        <file>vs2005.qss</file>
+    </qresource>
+    <qresource prefix="/keywords">
+        <file alias="cpp.txt">../src/core/keywords/cpp.txt</file>
+        <file alias="sql.txt">../src/core/keywords/sql.txt</file>
+        <file alias="asm.txt">../src/core/keywords/asm.txt</file>
+    </qresource>
+</RCC>
