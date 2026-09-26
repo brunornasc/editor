@@ -1,4 +1,5 @@
-build/
+# Build na raiz do repo (CMake configurado aqui)
+/build/
 cmake-build-*/
 *.user
 .idea/
