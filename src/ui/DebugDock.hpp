@@ -21,9 +21,10 @@ struct BreakpointEntry {
     bool enabled = true;
 };
 
-//! Dock "Depuracao" (direita): abas Pilha de Chamadas + Locais + Inspecao
-//! (watch) + Breakpoints (VS2005). O DebugController alimenta pelas
-//! set*(); duplo-clique nas listas navega ate o quadro (frameActivated).
+//! Dock "Depuracao": abas Pilha de Chamadas + Locais + Inspecao (watch) +
+//! Breakpoints (VS2005). Fica na MESMA area do dock "Project", separado em
+//! abas. O DebugController alimenta pelas set*(); duplo-clique nas listas
+//! navega ate o quadro (frameActivated).
 class DebugDock final : public QDockWidget {
     Q_OBJECT
 

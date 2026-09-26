@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDockWidget>
+#include <QModelIndex>
 
 class QTreeView;
 
@@ -42,6 +43,9 @@ protected:
     void showContextMenu(const QPoint& viewportPos);
 
 private:
+    //! Expande recursivamente projeto e pastas (parando em arquivos).
+    void expandFolders(const QModelIndex& parent);
+
     QTreeView* m_tree = nullptr;
     ProjectTreeModel* m_model = nullptr;
 };

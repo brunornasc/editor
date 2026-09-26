@@ -2,3 +2,12 @@ build/
 cmake-build-*/
 *.user
 .idea/
+
+# Build in-source (CMake configurado na raiz)
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+/editor
+editor_autogen/
+.qt/

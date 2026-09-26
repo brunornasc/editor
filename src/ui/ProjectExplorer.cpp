@@ -52,6 +52,26 @@ ProjectExplorer::ProjectExplorer(QWidget* parent)
 void ProjectExplorer::setProject(const proj::Project& project)
 {
     m_model->setProject(project);
+    expandFolders(QModelIndex());
+}
+
+void ProjectExplorer::expandFolders(const QModelIndex& parent)
+{
+    const int rows = m_model->rowCount(parent);
+    for (int row = 0; row < rows; ++row) {
+        const QModelIndex idx = m_model->index(row, 0, parent);
+        const auto* node = m_model->nodeFor(idx);
+        if (!node)
+            continue;
+        // Só projeto e pastas: expandir um arquivo dispararia o parse lazy
+        // dos simbolos de todo o projeto.
+        if (node->kind != ProjectTreeModel::Node::Kind::Project
+            && node->kind != ProjectTreeModel::Node::Kind::Folder) {
+            continue;
+        }
+        m_tree->expand(idx);
+        expandFolders(idx);
+    }
 }
 
 QTreeView* ProjectExplorer::tree() const

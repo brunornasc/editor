@@ -217,16 +217,26 @@ void ProjectTreeModel::fetchMore(const QModelIndex& index)
 
 void ProjectTreeModel::rebuildTree()
 {
+    // `m_root` e a raiz INVISIVEL do model (nunca aparece na view); o no de
+    // projeto e seu primeiro filho, para que o nome do projeto seja a linha de
+    // topo exibida. Sem projeto -> arvore vazia.
     m_root = new Node;
     m_root->kind = Node::Kind::Project;
-    m_root->name = m_project.displayName().isEmpty()
-        ? QStringLiteral("(vazio)")
-        : m_project.displayName();
-    m_root->absPath = m_project.rootDir;
-    m_root->tooltip = m_project.rootDir;
+    m_root->name = QStringLiteral("(vazio)");
+
+    if (m_project.displayName().isEmpty())
+        return;
+
+    auto* project = new Node;
+    project->kind = Node::Kind::Project;
+    project->name = m_project.displayName();
+    project->absPath = m_project.rootDir;
+    project->tooltip = m_project.rootDir;
+    project->parent = m_root;
+    m_root->children << project;
 
     for (const QString& rel : m_project.files) {
-        Node* cursor = m_root;
+        Node* cursor = project;
         const QStringList parts = rel.split(QLatin1Char('/'));
 
         // Cria/segue pastas intermediarias.
