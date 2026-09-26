@@ -29,6 +29,8 @@ constexpr qint64 kMaxBytes = 3 * 1024 * 1024;  // por arquivo
 constexpr int kMinFreq = 2;            // aparecer 2x+ p/ entrar no popup
 constexpr int kMaxWords = 400;         // teto de palavras escaneadas
 
+constexpr int kCacheVersion = 2;      // incremente ao mudar regras do scan/cache
+
 QString cacheDir()
 {
     return KeywordIndex::keywordsDir() + QStringLiteral("/cache");
@@ -53,6 +55,16 @@ void saveIndex(const QJsonObject& idx)
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
         return;
     f.write(QJsonDocument(idx).toJson(QJsonDocument::Indented));
+}
+
+//! Caminho da lista da linguagem: override do usuario, senao recurso embutido.
+QString keywordFileFor(const QString& lang)
+{
+    const QDir dir(KeywordIndex::keywordsDir());
+    QString path = dir.filePath(lang + QStringLiteral(".txt"));
+    if (!QFileInfo::exists(path))
+        path = QStringLiteral(":/keywords/") + lang + QStringLiteral(".txt");
+    return path;
 }
 
 //! Le uma lista de palavras de um arquivo (linha por linha; '#' = comentario).
@@ -140,12 +152,15 @@ bool isNoiseKeyword(const QString& w)
         "ifdef", "ifndef", "define", "undef", "endif", "else", "elif",
         "include", "pragma", "once", "error", "warning", "line", "import",
         "__cplusplus", "stdext", "_MSC_VER", "__GNUC__", "_GLIBCXX", "__extension__",
-        "typedef", "asm", "register", "goto",
+        "typedef", "asm", "register", "goto", "defined", "std",
     };
     if (stop.contains(w))
         return true;
-    if (w.startsWith(QLatin1String("__")))
-        return true;  // detalhe de implementacao
+    // Nada que comeca com '_' (identificadores reservados/detalhe de
+    // implementacao da libc++: _Tp, _M_impl, _GLIBCXX_*...). Codigo de
+    // usuario tambem os evita; no popup de membro de namespace sao so lixo.
+    if (w.startsWith(QLatin1String("_")))
+        return true;
     bool allDigit = true;
     for (const QChar ch : w)
         if (!ch.isDigit()) { allDigit = false; break; }
@@ -236,10 +251,15 @@ QStringList collectScanWords(const QString& mainPath,
                 }
             }
 
-            // Tokens do proprio arquivo.
-            auto idit = idRe.globalMatch(text);
-            while (idit.hasNext())
-                ++freq[idit.next().captured()];
+            // Tokens de ARQUIVOS DE CABEÇALHO (depth>=1): sao o que fica
+            // disponivel via "#include" p/ o popup de namespace/std. O
+            // proprio arquivo aberto conta como palavras do documento
+            // (completacao geral ja os pega por padrao no AcsAll).
+            if (depth >= 1) {
+                auto idit = idRe.globalMatch(text);
+                while (idit.hasNext())
+                    ++freq[idit.next().captured()];
+            }
         };
     scanFile(mainPath, 0);
 
@@ -361,11 +381,7 @@ QStringList KeywordIndex::defaultKeywords(const QString& language) const
     // simbolos) e a proxima chamada deve enxerga-lo.
 
     // 1) override do usuario; 2) recurso embutido.
-    const QDir dir(keywordsDir());
-    QString path = dir.filePath(lang + QStringLiteral(".txt"));
-    if (!QFileInfo::exists(path))
-        path = QStringLiteral(":/keywords/") + lang + QStringLiteral(".txt");
-    base = readWordList(path);
+    base = readWordList(keywordFileFor(lang));
     if (!base.isEmpty()) {
         QMutexLocker guard(&m_baseMutex);
         m_baseWords.insert(lang, QSet<QString>(base.constBegin(),
@@ -382,7 +398,8 @@ bool KeywordIndex::isCacheValid(const QString& filePath,
     QMutexLocker guard(&m_ioMutex);
     const QJsonObject idx = loadIndex();
     const QJsonObject e = idx.value(filePath).toObject();
-    if (e.isEmpty() || e.value(QLatin1String("lang")).toString() != language)
+    if (e.isEmpty() || e.value(QLatin1String("lang")).toString() != language
+        || e.value(QLatin1String("v")).toInt() != kCacheVersion)
         return false;
     const QString kwl = e.value(QLatin1String("kwl")).toString();
     if (kwl.isEmpty()
@@ -442,6 +459,7 @@ void KeywordIndex::saveIndexEntry(
     kwl.close();
 
     QJsonObject e;
+    e.insert(QLatin1String("v"), kCacheVersion);
     e.insert(QLatin1String("lang"), language);
     e.insert(QLatin1String("main_mtime"), main.lastModified().toMSecsSinceEpoch());
     e.insert(QLatin1String("kwl"), kwlName);

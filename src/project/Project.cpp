@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QProcess>
 
 #include <QDebug>
 
@@ -44,6 +45,13 @@ bool Project::load(const QString& jsonPath)
     name = o.value("name").toString();
     compiler = o.value("compiler").toString();
     makeTarget = o.value("makeTarget").toString();
+    compilerFlags.clear();
+    for (const QJsonValue v : o.value("compilerFlags").toArray())
+        compilerFlags << v.toString();
+    includeDirs.clear();
+    for (const QJsonValue v : o.value("includeDirs").toArray())
+        includeDirs << v.toString();
+
     dependencies.clear();
     for (const QJsonValue v : o.value("dependencies").toArray())
         dependencies << v.toString();
@@ -86,6 +94,16 @@ bool Project::save(const QString& jsonPath) const
     o["compiler"] = compiler;
     o["makeTarget"] = makeTarget;
 
+    QJsonArray cflags;
+    for (const QString& f : compilerFlags)
+        cflags.append(f);
+    o["compilerFlags"] = cflags;
+
+    QJsonArray idirs;
+    for (const QString& d : includeDirs)
+        idirs.append(d);
+    o["includeDirs"] = idirs;
+
     QJsonArray arr;
     for (const QString& f : files)
         arr.append(f);
@@ -114,10 +132,53 @@ bool Project::save(const QString& jsonPath) const
     f.write(QJsonDocument(o).toJson(QJsonDocument::Indented));
     return true;
 }
+// ---------------------------------------------------------------------------
+// intellisense: include dirs, flags de preprocessamento, deteccao de compiler
+// ---------------------------------------------------------------------------
 
-QString Project::fileName(const QString& rel) const
+QStringList Project::resolvedIncludeDirs() const
 {
-    return rootDir + QLatin1Char('/') + rel;
+    QStringList out;
+    const auto add = [&out](const QString& dir) {
+        if (!dir.isEmpty() && !out.contains(dir))
+            out << dir;
+    };
+    if (!rootDir.isEmpty())
+        add(rootDir);
+    // O que o codigo do usuario costuma assumir existir, mesmo sem configurar.
+    for (const QString& rel : {QStringLiteral("include"), QStringLiteral("inc"),
+                               QStringLiteral("src"), QStringLiteral("third_party/include")})
+        add(QDir(rootDir).absoluteFilePath(rel));
+    for (const QString& d : includeDirs) {
+        add(QDir::isAbsolutePath(d) ? d : QDir(rootDir).absoluteFilePath(d));
+    }
+    return out;
+}
+
+QStringList Project::preprocessFlags() const
+{
+    QStringList out = compilerFlags;
+    for (const QString& dir : resolvedIncludeDirs())
+        out << QStringLiteral("-I") + dir;
+    return out;
+}
+
+QStringList Project::detectCompilers()
+{
+    static const QStringList kCandidatos = {
+        QStringLiteral("g++"),        QStringLiteral("clang++"),
+        QStringLiteral("c++"),        QStringLiteral("g++-14"),
+        QStringLiteral("g++-13"),     QStringLiteral("g++-12"),
+        QStringLiteral("clang++-18"), QStringLiteral("clang++-17"),
+    };
+    QStringList out;
+    for (const QString& c : kCandidatos) {
+        QProcess p;
+        p.start(c, {QStringLiteral("--version")});
+        if (p.waitForFinished(3000))
+            out << c;
+    }
+    return out;
 }
 
 }  // namespace proj

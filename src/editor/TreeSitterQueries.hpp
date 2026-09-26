@@ -76,6 +76,73 @@ inline const char* K_CPP_SYMBOL_QUERY = R"(
      (qualified_identifier name: (identifier) @func.name)
   ])))
 
+  ;; ---- Funcoes template ----
+  ;; `std::endl` e `template <...> inline ostream& endl(ostream&)`; a gramatica
+  ;; embrulha em `template_declaration` -> `function_definition` -> declarator.
+  ;; Ja `extern template ostream& endl(ostream&);` (o que o pré-processado de
+  ;; <iostream> traz) vira `template_instantiation` com o mesmo declarator.
+  (template_declaration
+    (function_definition declarator: (function_declarator declarator: [
+       (identifier) @func.name
+       (qualified_identifier name: (identifier) @func.name)
+       (operator_name) @func.name
+    ])))
+  (template_declaration
+    (function_definition (reference_declarator (function_declarator declarator: [
+       (identifier) @func.name
+       (qualified_identifier name: (identifier) @func.name)
+       (operator_name) @func.name
+    ]))))
+  (template_declaration
+    ;; Sem `declarator:` no wrapper: nesta gramatica o pointer/reference
+  ;; aparece ora como campo, ora como filho solto -- exigir o campo perde metade
+  ;; dos metodos (ex.: `T& nome() const` definido dentro da classe).
+  (function_definition (pointer_declarator (function_declarator declarator: [
+       (identifier) @func.name
+       (qualified_identifier name: (identifier) @func.name)
+       (operator_name) @func.name
+    ]))))
+  (template_instantiation declarator: (function_declarator declarator: [
+     (identifier) @func.name
+     (qualified_identifier name: (identifier) @func.name)
+     (operator_name) @func.name
+  ]))
+  (template_instantiation (reference_declarator (function_declarator declarator: [
+     (identifier) @func.name
+     (qualified_identifier name: (identifier) @func.name)
+     (operator_name) @func.name
+  ])))
+  (template_instantiation (pointer_declarator (function_declarator declarator: [
+     (identifier) @func.name
+     (qualified_identifier name: (identifier) @func.name)
+     (operator_name) @func.name
+  ])))
+
+  ;; `T& nome() const { ... }` definido dentro da classe embrulha o
+  ;; declarator em `reference_declarator` (o `type` do function_definition e o
+  ;; tipo de retorno, que pode ser referencia ou ponteiro).
+  (function_definition (reference_declarator (function_declarator declarator: [
+     (identifier) @func.name
+     (field_identifier) @func.name
+     (operator_name) @func.name
+     (destructor_name) @func.name
+     (qualified_identifier name: (identifier) @func.name)
+  ])))
+  (declaration (reference_declarator (function_declarator declarator: [
+     (identifier) @func.name
+     (field_identifier) @func.name
+     (operator_name) @func.name
+     (destructor_name) @func.name
+     (qualified_identifier name: (identifier) @func.name)
+  ])))
+  (field_declaration (reference_declarator (function_declarator declarator: [
+     (identifier) @func.name
+     (field_identifier) @func.name
+     (operator_name) @func.name
+     (destructor_name) @func.name
+     (qualified_identifier name: (identifier) @func.name)
+  ])))
+
   ;; ---- Campos de classe/struct ----
   (field_declaration declarator: [
      (field_identifier) @field.name

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor/CodeOutlineParser.hpp"  // OutlineData/OutlineScope (nav bars)
+#include "editor/Preprocessor.hpp"         // SourceMap
 #include "editor/SymbolTree.hpp"
 
 #include <tree_sitter/api.h>
@@ -14,6 +15,10 @@ namespace editor {
 //! enum aninhados, membros, typedefs, variaveis e macros -- cada um com
 //! arquivo e linha, para o intellisense e o "ir para declaracao".
 //!
+//! Quando o texto veio do preprocessador, passe o `SourceMap`: a linha que o
+//! Tree-Sitter devolve e' da saida achatada, e sem o mapa o "ir para
+//! declaracao" levaria o usuario a um temporario em vez do header de origem.
+//!
 //! NAO e thread-safe: cada thread/worker deve ter a sua instancia.
 class TreeSitterOutlineParser final {
 public:
@@ -23,8 +28,11 @@ public:
     TreeSitterOutlineParser(const TreeSitterOutlineParser&) = delete;
     TreeSitterOutlineParser& operator=(const TreeSitterOutlineParser&) = delete;
 
-    //! Arvore de simbolos do texto. `filePath` so entra nos simbolos.
-    SymbolTree parseSymbols(const QString& text, const QString& filePath = QString());
+    //! Arvore de simbolos do texto. `filePath` e' usado quando o texto nao
+    //! tem mapa de linhas (arquivo lido direto do disco).
+    SymbolTree parseSymbols(const QString& text,
+                            const QString& filePath = QString(),
+                            const SourceMap* map = nullptr);
 
     //! Atalho: arvore de simbolos convertida no formato antigo das nav bars.
     OutlineData parse(const QString& text);

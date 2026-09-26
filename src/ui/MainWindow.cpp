@@ -5,6 +5,7 @@
 #include "debug/DebugController.hpp"
 #include "project/Project.hpp"
 #include "ui/CodeEditorWidget.hpp"
+#include "editor/HeaderIndex.hpp"
 #include "ui/DebugDock.hpp"
 #include "ui/EditorTabWidget.hpp"
 #include "ui/OutputWindow.hpp"
@@ -260,7 +261,7 @@ void MainWindow::onAbout()
 {
     QMessageBox::about(
         this, QObject::tr("Sobre a IDE"),
-        QObject::tr("<h3>IDE VS2005 — C++ / Qt6</h3>"
+        QObject::tr("<h3>Editor — C++ / Qt6</h3>"
                     "Ambiente de desenvolvimento extensivel: editor QScintilla, "
                     "build por Makefiles + Conan e debug GDB/MI.<br><br>"
                     "Parte 4: build (Makefile + Conan) e navegacao de erros.<br>"
@@ -297,7 +298,7 @@ void MainWindow::onNewProject()
         if (main.open(QIODevice::WriteOnly | QIODevice::Text)) {
             main.write(QStringLiteral(
                            "#include <iostream>\n\n"
-                           "// Projeto \"%1\" — IDE VS2005 (Parte 3)\n\n"
+                           "// Projeto \"%1\" — IDE Editor\n\n"
                            "int main()\n{\n"
                            "    std::cout << \"Hello, %1!\\n\";\n"
                            "    return 0;\n"
@@ -311,6 +312,7 @@ void MainWindow::onNewProject()
                                       {QStringLiteral("src/main.cpp")});
     m_projectJsonPath = dir.filePath(cleanName + QStringLiteral(".json"));
     m_project.save(m_projectJsonPath);
+    configureIntellisense();
     m_projectExplorer->setProject(m_project);
     m_debugController->setProject(m_project);
     m_editorTabs->openFile(mainPath);
@@ -339,6 +341,7 @@ bool MainWindow::openProjectFile(const QString& path)
     }
     m_project = p;
     m_projectJsonPath = path;
+    configureIntellisense();
     m_projectExplorer->setProject(m_project);
     m_debugController->setProject(m_project);
     // Restaura os breakpoints persistidos no arquivo de projeto (Parte 5).
@@ -354,6 +357,7 @@ void MainWindow::onCloseProject()
     m_debugAutoStart = false;
     m_project = {};
     m_projectJsonPath.clear();
+    configureIntellisense();
     m_projectExplorer->setProject(m_project);
     if (m_debugController)
         m_debugController->setProject(m_project);
@@ -406,7 +410,7 @@ void MainWindow::onNewFileInFolder(const QString& directory)
                cleanName.endsWith(QLatin1String(".cxx"))) {
         content = QStringLiteral(
             "#include <iostream>\n\n"
-            "// Criado na IDE VS2005\n\n"
+            "// Criado na IDE Editor\n\n"
             "int main()\n{\n"
             "    std::cout << \"Hello!\\n\";\n"
             "    return 0;\n"
@@ -719,8 +723,26 @@ void MainWindow::onProjectSettings()
     auto* nameLabel = new QLabel(m_project.displayName(), &dlg);
     form->addRow(QObject::tr("Nome:"), nameLabel);
 
-    auto* compiler = new QLineEdit(m_project.compiler, &dlg);
+    // Compilador: o que existe no PATH, com o do projeto marcado.
+    auto* compiler = new QComboBox(&dlg);
+    compiler->setEditable(true);
+    for (const QString& c : proj::Project::detectCompilers())
+        compiler->addItem(c);
+    if (!m_project.compiler.isEmpty() && compiler->findText(m_project.compiler) < 0)
+        compiler->addItem(m_project.compiler);
+    compiler->setCurrentText(m_project.compiler.isEmpty() ? QStringLiteral("g++")
+                                                         : m_project.compiler);
     form->addRow(QObject::tr("Compilador:"), compiler);
+
+    // Flags que mudam o resultado do preprocessamento (`-std=c++20`, ...).
+    auto* flags = new QLineEdit(m_project.compilerFlags.join(QLatin1Char(' ')), &dlg);
+    flags->setPlaceholderText(QStringLiteral("-std=c++20 -fno-exceptions"));
+    form->addRow(QObject::tr("Flags:"), flags);
+
+    // Include dirs extras, relativos a raiz do projeto (separados por ;).
+    auto* incDirs = new QLineEdit(m_project.includeDirs.join(QLatin1Char(';')), &dlg);
+    incDirs->setPlaceholderText(QStringLiteral("include;third_party/foo"));
+    form->addRow(QObject::tr("Include dirs:"), incDirs);
 
     auto* target = new QLineEdit(m_project.makeTarget, &dlg);
     form->addRow(QObject::tr("Executavel (make):"), target);
@@ -735,16 +757,47 @@ void MainWindow::onProjectSettings()
     if (dlg.exec() != QDialog::Accepted)
         return;
 
-    m_project.compiler = compiler->text().trimmed();
+    m_project.compiler = compiler->currentText().trimmed();
     if (m_project.compiler.isEmpty())
         m_project.compiler = QStringLiteral("g++");
+
+    m_project.compilerFlags.clear();
+    for (const QString& f : flags->text().split(QLatin1Char(' '), Qt::SkipEmptyParts))
+        m_project.compilerFlags << f;
+
+    m_project.includeDirs.clear();
+    for (const QString& d : incDirs->text().split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
+        const QString t = d.trimmed();
+        if (!t.isEmpty())
+            m_project.includeDirs << t;
+    }
     m_project.makeTarget = target->text().trimmed();
     if (m_project.makeTarget.isEmpty())
         m_project.makeTarget = m_project.name;
     persistProjectJson();
+    configureIntellisense();
     m_projectExplorer->setProject(m_project);
     statusBar()->showMessage(QObject::tr("Configuracoes do projeto salvas"),
                              3000);
+}
+
+void MainWindow::configureIntellisense()
+{
+    editor::HeaderIndex* idx = editor::HeaderIndex::instance();
+    if (!m_project.isValid()) {
+        // Sem projeto: ainda assim usa o compilador do PATH, so sem cache.
+        idx->configure(QStringLiteral("g++"), {}, {});
+        idx->setCacheDir(QString());
+        return;
+    }
+    QString compiler = m_project.compiler.trimmed();
+    if (compiler.isEmpty())
+        compiler = QStringLiteral("g++");
+    // `-std=` e flags do projeto vao para o `g++ -E`; os `-I` dos includeDirs
+    // tambem, para que `#include "utils/log.h"` preprocesse igual no build.
+    idx->configure(compiler, m_project.preprocessFlags(),
+                   m_project.resolvedIncludeDirs());
+    idx->setCacheDir(QDir(m_project.rootDir).filePath(QStringLiteral(".editor-cache")));
 }
 
 // ---------------------------------------------------------------------------
@@ -988,7 +1041,7 @@ void MainWindow::createToolBars()
 void MainWindow::createDocks()
 {
     m_projectExplorer = new ProjectExplorer(this);
-    addDockWidget(Qt::LeftDockWidgetArea, m_projectExplorer);
+    addDockWidget(Qt::RightDockWidgetArea, m_projectExplorer);
     m_viewMenu->addAction(m_projectExplorer->toggleViewAction());
 
     m_outputWindow = new OutputWindow(this);
@@ -996,7 +1049,11 @@ void MainWindow::createDocks()
     m_viewMenu->addAction(m_outputWindow->toggleViewAction());
 
     m_debugDock = new DebugDock(this);
+    // Mesma area do Project: os dois ficam no mesmo espaco, separados em abas
+    // (equivale a arrastar um painel sobre o outro).
     addDockWidget(Qt::RightDockWidgetArea, m_debugDock);
+    tabifyDockWidget(m_debugDock, m_projectExplorer);
+    m_projectExplorer->raise();
     m_viewMenu->addAction(m_debugDock->toggleViewAction());
 
     m_editorTabs = new EditorTabWidget(this);
@@ -1048,9 +1105,9 @@ void MainWindow::createStatusBar()
 void MainWindow::updateWindowTitle()
 {
     if (m_currentFile.isEmpty())
-        setWindowTitle(QObject::tr("IDE VS2005 — [*]"));
+        setWindowTitle(QObject::tr("Editor — [*]"));
     else
-        setWindowTitle(QObject::tr("IDE VS2005 — %1 [*]")
+        setWindowTitle(QObject::tr("Editor — %1 [*]")
                            .arg(QFileInfo(m_currentFile).fileName()));
     setWindowModified(m_editorTabs->currentWidget()
                           ? m_editorTabs->editorAt(m_editorTabs->currentIndex())

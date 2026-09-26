@@ -74,6 +74,12 @@ add_executable(editor
         src/editor/TreeSitterOutlineParser.cpp
         src/editor/SymbolTree.hpp
         src/editor/SymbolTree.cpp
+        src/editor/Preprocessor.hpp
+        src/editor/Preprocessor.cpp
+        src/editor/IncludeResolver.hpp
+        src/editor/IncludeResolver.cpp
+        src/editor/HeaderIndex.hpp
+        src/editor/HeaderIndex.cpp
         src/core/ThemeManager.cpp
         src/core/ThemeManager.hpp
         src/core/Keywords.cpp

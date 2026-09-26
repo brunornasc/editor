@@ -114,12 +114,131 @@ QString shortenSignature(const QString& sig)
 //!     Em C++11 so atributo `[[...]]` e valido depois do nome.
 //!  3. `__attribute__((...))`: em `inline namespace __cxx11 __attribute__((__abi_tag__("cxx11")))`
 //!     o no `namespace_identifier` da gramatica termina la dentro e o nome sai
-//!     errado ("cxx11" em vez de "__cxx11").
+//!     errado ("cxx11" em vez de "__cxx11"). Pior: em `<iostream>` o
+//!     `_GLIBCXX_VISIBILITY(default)` e expandido com parenteses aninhados
+//!     **varias linhas** -- `__attribute__ ((__visibility__ (` / `"default"` / `)))`
+//!     -- e a gramatica nao aceita atributo nessa posicao: o `namespace std`
+//!     inteiro vira `ERROR` e `std::cout`, `std::cin`... ficam sem prefixo.
 //!
-//! Os tres viram espacos de mesmo tamanho: offsets e numeros de linha do
-//! arquivo original continuam valendo, entao `line` bate com o que o editor
-//! mostra. `[[...]]` de C++11 fica intacto, e uma linha com
+//! Tudo vira espacos do mesmo tamanho, **preservando os '\\n'**: e o SourceMap
+//! que traduz linha da saida preprocessada para arquivo/linha do original, e
+//! ele conta '\\n'. `[[...]]` de C++11 fica intacto, e uma linha com
 //! `_GLIBCXX20_CONSTEXPR` isolado e apenas `constexpr` ou nada.
+
+//! Apaga [from, from+len) trocando por espacos, mas mantem as quebras de linha.
+void blankRange(QChar* data, int from, int len)
+{
+    for (int i = from; i < from + len; ++i) {
+        if (data[i] != QLatin1Char('\n'))
+            data[i] = QLatin1Char(' ');
+    }
+}
+
+//! Compara `QChar` com uma palavra de `char`. `memcmp` nao serve: `QChar` tem
+//! 2 bytes, entao o byte 0 do segundo caractere ja nao bate e nada casa.
+bool startsWithAt(const QChar* d, int size, int i, const char* palavra)
+{
+    const int len = int(std::strlen(palavra));
+    if (i + len > size)
+        return false;
+    for (int k = 0; k < len; ++k) {
+        if (d[i + k] != QLatin1Char(palavra[k]))
+            return false;
+    }
+    return true;
+}
+
+//! Uma passada so, com estados: comentario e literal tem prioridade sobre
+//! palavra-chave -- `// don't` com apostrofo e `/* "aspas" */` abortam uma
+//! varredura que tratasse aspas antes de comentario, e a contagem de parenteses
+//! vira lixo: o apagamento come a `{` do namespace e o scope inteiro se perde.
+int matchingParen(const QChar* d, int size, int open)
+{
+    int depth = 0;
+    for (int i = open; i < size; ++i) {
+        const QChar c = d[i];
+        if (c == QLatin1Char('/') && i + 1 < size && d[i + 1] == QLatin1Char('/')) {
+            while (i < size && d[i] != QLatin1Char('\n'))
+                ++i;
+            continue;
+        }
+        if (c == QLatin1Char('/') && i + 1 < size && d[i + 1] == QLatin1Char('*')) {
+            i += 2;
+            while (i + 1 < size && !(d[i] == QLatin1Char('*') && d[i + 1] == QLatin1Char('/')))
+                ++i;
+            ++i;
+            continue;
+        }
+        if (c == QLatin1Char('"') || c == QLatin1Char('\'')) {
+            const QChar quote = c;
+            for (++i; i < size; ++i) {
+                if (d[i] == QLatin1Char('\\')) {
+                    ++i;
+                    continue;
+                }
+                if (d[i] == quote)
+                    break;
+            }
+            continue;
+        }
+        if (c == QLatin1Char('(')) {
+            ++depth;
+        } else if (c == QLatin1Char(')')) {
+            if (--depth == 0)
+                return i;
+        }
+    }
+    return -1;
+}
+
+//! `__attribute__` / `__declspec` / `alignas` followed de `(`, e `__extension__`.
+//! Aninhamento arbitrario, varias linhas, com guarda: um atributo nunca contem
+//! `{`, `}` nem `;` -- se o trecho casado tiver um deles, o casamento estava
+//! errado e nada e apagado.
+void blankAttributes(QChar* d, int size)
+{
+    static const char* kComLista[] = {"__attribute__", "__attribute", "__declspec", "alignas"};
+    for (int i = 0; i < size; ++i) {
+        const QChar c = d[i];
+        if (c != QLatin1Char('_') && c != QLatin1Char('a'))
+            continue;
+        const bool fronteira = (i == 0) || !(d[i - 1].isLetterOrNumber() || d[i - 1] == QLatin1Char('_'));
+        if (!fronteira)
+            continue;
+        if (startsWithAt(d, size, i, "__extension__")) {
+            blankRange(d, i, 13);
+            i += 12;
+            continue;
+        }
+        for (const char* chave : kComLista) {
+            const int len = int(std::strlen(chave));
+            if (!startsWithAt(d, size, i, chave))
+                continue;
+            if (i + len < size && (d[i + len].isLetterOrNumber() || d[i + len] == QLatin1Char('_')))
+                continue;
+            int j = i + len;
+            while (j < size && (d[j] == QLatin1Char(' ') || d[j] == QLatin1Char('\t')))
+                ++j;
+            if (j >= size || d[j] != QLatin1Char('('))
+                break;  // `__attribute` solto, sem lista: nao ha o que varrer
+            const int close = matchingParen(d, size, j);
+            if (close < 0)
+                break;
+            bool seguro = true;
+            for (int k = i; k <= close; ++k) {
+                if (d[k] == QLatin1Char('{') || d[k] == QLatin1Char('}') || d[k] == QLatin1Char(';')) {
+                    seguro = false;
+                    break;
+                }
+            }
+            if (seguro)
+                blankRange(d, i, close - i + 1);
+            i = seguro ? close : j;
+            break;
+        }
+    }
+}
+
 QString sanitizeForParse(const QString& text)
 {
     static const QRegularExpression reLinhaSolta(
@@ -129,9 +248,6 @@ QString sanitizeForParse(const QString& text)
         QStringLiteral("^([ \\t]*namespace[ \\t]+[A-Za-z_][\\w:]*)"
                        "([ \\t]+[A-Z_][A-Z0-9_]*\\([^\\n]*\\))"),
         QRegularExpression::MultilineOption);
-    // um nivel de parenteses aninhado, para format(printf,1,2) e similar
-    static const QRegularExpression reAtributo(
-        QStringLiteral("__attribute__[ \\t]*\\(\\([^()]*(\\([^()]*\\)[^()]*)*\\)\\)"));
 
     const auto blank = [](QString& out, const QRegularExpression& re) {
         auto it = re.globalMatch(out);
@@ -143,14 +259,16 @@ QString sanitizeForParse(const QString& text)
     };
 
     if (!reLinhaSolta.match(text).hasMatch() && !reNamespace.match(text).hasMatch()
-        && !reAtributo.match(text).hasMatch()) {
+        && !text.contains(QLatin1String("__attribute")) && !text.contains(QLatin1String("__declspec"))
+        && !text.contains(QLatin1String("alignas"))
+        && !text.contains(QLatin1String("__extension__"))) {
         return text;
     }
 
     QString out = text;
     blank(out, reLinhaSolta);
     blank(out, reNamespace);
-    blank(out, reAtributo);
+    blankAttributes(out.data(), out.size());
     return out;
 }
 
@@ -200,7 +318,8 @@ TreeSitterOutlineParser::~TreeSitterOutlineParser()
 }
 
 SymbolTree TreeSitterOutlineParser::parseSymbols(const QString& text,
-                                                 const QString& filePath)
+                                                 const QString& filePath,
+                                                 const SourceMap* map)
 {
     SymbolTree out;
 
@@ -344,8 +463,14 @@ SymbolTree TreeSitterOutlineParser::parseSymbols(const QString& text,
             n.name = p.text;
             n.kind = kind;
             n.signature = p.signature;
-            n.file = filePath;
-            n.line = p.line;
+            if (map) {
+                map->lookup(p.line, &n.file, &n.line);
+                if (n.file.isEmpty())
+                    n.file = filePath;
+            } else {
+                n.file = filePath;
+                n.line = p.line;
+            }
             n.isInline = kind == SymbolKind::Namespace && isInlineNamespace(p.defNode, parseBytes);
             const int idx = addNode(std::move(n), parent);
             scopeByDefNode.insert(p.defNode.id, idx);
@@ -357,8 +482,14 @@ SymbolTree TreeSitterOutlineParser::parseSymbols(const QString& text,
         n.name = p.text;
         n.kind = SymbolKind(p.kind);
         n.signature = p.signature;
-        n.file = filePath;
-        n.line = p.line;
+        if (map) {
+            map->lookup(p.line, &n.file, &n.line);
+            if (n.file.isEmpty())
+                n.file = filePath;
+        } else {
+            n.file = filePath;
+            n.line = p.line;
+        }
 
         // Definicao fora do corpo da classe: o nome capturado veio de um
         // qualified-id escrito no codigo ("Foo::bar"), e nao de um

@@ -1,5 +1,6 @@
 #include "ui/CodeEditorWidget.hpp"
-
+#include "editor/HeaderIndex.hpp"
+#include "editor/TreeSitterOutlineParser.hpp"
 #include "core/Keywords.hpp"
 
 #include <Qsci/qsciapis.h>
@@ -20,11 +21,16 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
+#include <QRegularExpression>
 #include <QScrollBar>
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <QByteArray>
+#include <cstdint>
+
 #include <QDebug>
+#include <QSet>
 
 namespace ui {
 
@@ -68,12 +74,34 @@ CodeEditorWidget::CodeEditorWidget(QWidget* parent)
     applyLanguage(m_language);  // lexer + intellisense do documento inicial
     root->addWidget(m_editor, 1);
 
-    // Scan assincrono de #includes atualiza o intellisense por documento.
-    connect(core::KeywordIndex::instance(), &core::KeywordIndex::scanReady,
-            this, &CodeEditorWidget::onLanguageScanReady);
+    // Intellisense de verdade: o HeaderIndex preprocessa o include com o
+    // compilador do projeto e devolve os simbolos (com arquivo/linha).
+    connect(editor::HeaderIndex::instance(), &editor::HeaderIndex::includeIndexed,
+            this, &CodeEditorWidget::onHeaderIndexed);
+    // Trocou compilador/flags nas settings: o indice zerou, entao os includes
+    // deste arquivo precisam ser pedidos outra vez com o contexto novo.
+    connect(editor::HeaderIndex::instance(), &editor::HeaderIndex::contextChanged, this,
+            [this]() {
+                m_indexedIncludes.clear();
+                scheduleIncludeScan();
+            });
+    m_includeTimer = new QTimer(this);
+    m_includeTimer->setSingleShot(true);
+    m_includeTimer->setInterval(400);
+    connect(m_includeTimer, &QTimer::timeout, this, &CodeEditorWidget::detectIncludes);
+    connect(m_editor, &QsciScintilla::textChanged, this,
+            &CodeEditorWidget::scheduleIncludeScan);
 
-    // Auto-completar chaves/colchetes (tratado em eventFilter).
+    // Auto-completar chaves/colchetes + Ctrl+Espaco (eventFilter).
     m_editor->installEventFilter(this);
+    connect(m_editor, &QsciScintillaBase::SCN_CHARADDED,
+            this, [this](int ch) {
+                if (ch == ':' || ch == '.' || ch == '>'
+                    || ch == '_' || (ch >= '0' && ch <= '9')
+                    || (ch >= 'A' && ch <= 'Z')
+                    || (ch >= 'a' && ch <= 'z'))
+                    triggerIdeCompletion(false);
+            });
 
     // Hover (mouse parado) para tooltip de valor no depurador.
     m_editor->setMouseTracking(true);
@@ -127,13 +155,20 @@ void CodeEditorWidget::configureCommonStyle(QsciScintilla* ed)
     ed->setCaretLineBackgroundColor(QColor(0xF0, 0xF5, 0xFC));
 
     // --- Intellisense (autocompletar) -----------------------------------
-    // Palavras/APIs por linguagem vêm do KeywordIndex via applyLanguage();
-    // aqui apenas o comportamento: lista de todas as fontes, filtro a cada
-    // tecla, abre ate com 1 caractere.
-    ed->setAutoCompletionSource(QsciScintilla::AcsAll);
+    // Qsci nao dispara sozinho: o popup e aberto em SCN_CHARADDED /
+    // Ctrl+Espaco com lista contextual (std:: so mostra membros de std).
+    ed->setAutoCompletionSource(QsciScintilla::AcsNone);
     ed->setAutoCompletionCaseSensitivity(false);
     ed->setAutoCompletionThreshold(1);
+    ed->setAutoCompletionUseSingle(QsciScintilla::AcusNever);
     ed->setAutoCompletionShowSingle(false);
+    ed->setAutoCompletionFillupsEnabled(false);
+    ed->setCallTipsStyle(QsciScintilla::CallTipsNone);
+    ed->SendScintilla(QsciScintillaBase::SCI_AUTOCSETORDER,
+                      (unsigned long)QsciScintillaBase::SC_ORDER_PERFORMSORT);
+    ed->SendScintilla(QsciScintillaBase::SCI_AUTOCSETIGNORECASE, 1);
+    ed->SendScintilla(QsciScintillaBase::SCI_AUTOCSETMAXHEIGHT, 12);
+    ed->SendScintilla(QsciScintillaBase::SCI_AUTOCSETCHOOSESINGLE, 0);
 
     // --- Margens ---------------------------------------------------------
     // 0: numeros de linha
@@ -236,18 +271,25 @@ void CodeEditorWidget::applyLanguage(const QString& language)
         lexer->setPaper(QColor(0xFF, 0xFF, 0xFF));
     }
 
-    // Lista base (arquivo proprio da linguagem) + scan ja cacheado.
+    // Palavras-chave da linguagem (if/int/class...). O que vier de biblioteca
+    // NAO vem mais daqui: quem supplies os nomes de `std::` e o HeaderIndex,
+    // indexando o cabecalho que o documento include de verdade.
     core::KeywordIndex* kw = core::KeywordIndex::instance();
-    m_apiWords = kw->defaultKeywords(m_language);
-    const QStringList cached = kw->cachedKeywordsFor(m_filePath);
-    for (const QString& w : cached) {
-        if (!m_apiWords.contains(w))
-            m_apiWords.append(w);
-    }
+    m_langKeywords = kw->defaultKeywords(m_language);
+    m_apiWords = m_langKeywords;
+    updateStdWords();
 
     m_apis = lexer ? new QsciAPIs(lexer) : nullptr;
     rebuildApis();
-    requestLanguageScan();
+    detectIncludes();
+
+    // setLexer pode restaurar fillups/separators do lexer; reafirma o modo IDE.
+    m_editor->setAutoCompletionSource(QsciScintilla::AcsNone);
+    m_editor->setAutoCompletionFillupsEnabled(false);
+    m_editor->SendScintilla(QsciScintillaBase::SCI_AUTOCSETORDER,
+                            (unsigned long)QsciScintillaBase::SC_ORDER_PERFORMSORT);
+    m_editor->SendScintilla(QsciScintillaBase::SCI_AUTOCSETIGNORECASE, 1);
+    m_editor->SendScintilla(QsciScintillaBase::SCI_AUTOCSETMAXHEIGHT, 12);
 }
 
 void CodeEditorWidget::rebuildApis()
@@ -255,35 +297,138 @@ void CodeEditorWidget::rebuildApis()
     if (!m_apis)
         return;
     m_apis->clear();
-    for (const QString& w : m_apiWords)
+    for (const QString& w : m_langKeywords)
         m_apis->add(w);
+    if (m_language == QLatin1String("cpp"))
+        m_apis->add(QStringLiteral("std"));
+    // Qualificados: o Qsci so lista estes apos "std::", nunca misturados
+    // com if/int/while.
+    for (const QString& w : m_stdWords)
+        m_apis->add(QStringLiteral("std::") + w);
+    for (const QString& w : m_apiWords) {
+        if (m_langKeywords.contains(w))
+            continue;
+        if (m_stdWords.contains(w))
+            continue;
+        m_apis->add(w);
+    }
     // gera a API preparada em background (o QScintilla consome sob demanda;
     // nao bloqueamos o GUI nem esperamos o arquivo .qsci ficar pronto).
     m_apis->prepare();
 }
 
-void CodeEditorWidget::requestLanguageScan()
+void CodeEditorWidget::updateStdWords()
 {
-    if (!core::KeywordIndex::scansIncludes(m_language)
-        || m_filePath.isEmpty())
-        return;
-    core::KeywordIndex::instance()->requestScan(m_filePath, m_language);
+    // Popup "std::" = uniao dos nomes reais que o HeaderIndex extraiu dos
+    // headers deste documento. Nao ha mais lista curada: o que o usuario ve
+    // veio de `g++ -E` + arvore de simbolos, entao `std::` responde sobre o
+    // cabecalho que ele incluiu de verdade.
+    const editor::HeaderIndex* idx = editor::HeaderIndex::instance();
+    QStringList stdWords;
+    const QSet<QString> langSet(m_langKeywords.constBegin(),
+                                m_langKeywords.constEnd());
+    const auto add = [&](const QString& w) {
+        if (w.isEmpty() || langSet.contains(w) || stdWords.contains(w))
+            return;
+        stdWords.append(w);
+    };
+    for (const QString& spec : m_indexedIncludes) {
+        for (const QString& w : idx->stdMembers(spec))
+            add(w);
+    }
+    m_stdWords = stdWords;
 }
 
-void CodeEditorWidget::onLanguageScanReady(const QString& filePath,
-                                           const QString& language,
-                                           const QStringList& extraWords)
+void CodeEditorWidget::scheduleIncludeScan()
 {
-    if (filePath != m_filePath || language != m_language)
+    if (m_language != QLatin1String("cpp"))
         return;
-    // Merge: base da linguagem + tokens escaneados (dedupe preservando ordem).
-    QStringList merged = core::KeywordIndex::instance()->defaultKeywords(m_language);
-    for (const QString& w : extraWords) {
-        if (!merged.contains(w))
-            merged.append(w);
+    m_includeTimer->start();
+}
+
+void CodeEditorWidget::detectIncludes()
+{
+    if (m_language != QLatin1String("cpp"))
+        return;
+
+    // Inclui "com o que o usuario ja digitou": o regex aceita a linha ainda
+    // sem `>` final, para indexar enquanto ele escreve `#include <vec`.
+    static const QRegularExpression re(
+        QStringLiteral("^[ \t]*#[ \t]*include[ \t]*[<\"]([^>\"\n]*)"),
+        QRegularExpression::MultilineOption);
+
+    editor::HeaderIndex* idx = editor::HeaderIndex::instance();
+    const QString text = m_editor->text();
+    auto it = re.globalMatch(text);
+    QStringList wanted;
+    while (it.hasNext()) {
+        const QString name = it.next().captured(1).trimmed();
+        if (name.isEmpty())
+            continue;
+        // So o que tem separador de diretorio (relative/absolute include) e o
+        // que resolve: header de sistema entra pelo proprio nome.
+        wanted << name;
     }
-    m_apiWords = merged;
+
+    // Um include so entra no popup depois de indexado com sucesso.
+    QStringList stillWanted;
+    for (const QString& name : wanted) {
+        if (!m_indexedIncludes.contains(name))
+            stillWanted << name;
+    }
+    for (const QString& name : stillWanted)
+        idx->request(name, m_filePath);
+    applyIndexedSymbols();
+}
+
+void CodeEditorWidget::applyIndexedSymbols()
+{
+    const editor::HeaderIndex* idx = editor::HeaderIndex::instance();
+    QStringList stdWords;
+    QStringList allNames;
+    for (const QString& spec : m_indexedIncludes) {
+        for (const QString& w : idx->stdMembers(spec)) {
+            if (!stdWords.contains(w))
+                stdWords << w;
+        }
+        for (const editor::IndexedName& n : idx->names(spec)) {
+            if (!allNames.contains(n.name))
+                allNames << n.name;
+        }
+    }
+    m_stdWords = stdWords;
+    // Nomes qualificados (`std::vector`, `std::cout`) entram no QsciAPIs: o
+    // popup fica plano, como o VS, e o filtro por `::` e do proprio Qsci.
+    for (const QString& n : allNames) {
+        if (!m_apiWords.contains(n))
+            m_apiWords << n;
+    }
     rebuildApis();
+}
+
+void CodeEditorWidget::onHeaderIndexed(const QString& includeSpec, bool ok)
+{
+    if (m_language != QLatin1String("cpp"))
+        return;
+    if (!ok)
+        return;
+    // So interessa se o include pertence a este documento.
+    static const QRegularExpression re(
+        QStringLiteral("^[ \t]*#[ \t]*include[ \t]*[<\"]([^>\"\n]*)"),
+        QRegularExpression::MultilineOption);
+    auto it = re.globalMatch(m_editor->text());
+    bool mine = false;
+    while (it.hasNext()) {
+        if (it.next().captured(1).trimmed() == includeSpec) {
+            mine = true;
+            break;
+        }
+    }
+    if (!mine)
+        return;
+    if (!m_indexedIncludes.contains(includeSpec))
+        m_indexedIncludes << includeSpec;
+    applyIndexedSymbols();
 }
 
 void CodeEditorWidget::setupNavigationBar()
@@ -329,6 +474,7 @@ bool CodeEditorWidget::openFile(const QString& filePath)
     m_editor->setCursorPosition(0, 0);
 
     // Lexer/intellisense conforme a linguagem (extensao) do arquivo.
+    m_indexedIncludes.clear();
     applyLanguage(core::KeywordIndex::languageForFile(filePath));
 
     refreshOutline();
@@ -338,7 +484,13 @@ bool CodeEditorWidget::openFile(const QString& filePath)
 
 void CodeEditorWidget::refreshOutline()
 {
-    m_outline = editor::CodeOutlineParser::parse(m_editor->text());
+    if (!m_editor)
+        return;
+    // Instancia propria por chamada: o TreeSitterOutlineParser nao e
+    // thread-safe e um `static` compartilhado entre abas seria estado global
+    // justamente na classe que mantem o outline de cada documento.
+    editor::TreeSitterOutlineParser parser;
+    m_outline = parser.parse(m_editor->text());
     populateNavigationBars();
     emit outlineUpdated();
 }
@@ -513,6 +665,19 @@ void CodeEditorWidget::gotoLine(int line)
 bool CodeEditorWidget::eventFilter(QObject* watched, QEvent* event)
 {
     if (watched == m_editor) {
+        if (event->type() == QEvent::ShortcutOverride
+            || event->type() == QEvent::KeyPress) {
+            auto* ke = static_cast<QKeyEvent*>(event);
+            const Qt::KeyboardModifiers mods =
+                ke->modifiers() & (Qt::ControlModifier | Qt::AltModifier
+                                   | Qt::MetaModifier | Qt::ShiftModifier);
+            if (ke->key() == Qt::Key_Space && mods == Qt::ControlModifier) {
+                if (event->type() == QEvent::KeyPress)
+                    triggerIdeCompletion(true);
+                ke->accept();
+                return true;
+            }
+        }
         if (event->type() == QEvent::KeyPress) {
             auto* ke = static_cast<QKeyEvent*>(event);
             const Qt::KeyboardModifiers mods = ke->modifiers();
@@ -521,16 +686,9 @@ bool CodeEditorWidget::eventFilter(QObject* watched, QEvent* event)
                 const QString text = ke->text();
                 if (text.size() == 1) {
                     const QChar c = text.at(0);
-                    if (c == QLatin1Char(':')) {
-                        // "std::" -> lista de todos os membros conhecidos
-                        // (VS2005). O ':' nao e caractere de palavra, entao o
-                        // autocompletar automatico nao abriria por si so.
-                        QTimer::singleShot(0, this, [this] {
-                            triggerNamespaceCompletion();
-                        });
-                    } else if (c == QLatin1Char('{')
-                               || c == QLatin1Char('(')
-                               || c == QLatin1Char('[')) {
+                    if (c == QLatin1Char('{')
+                        || c == QLatin1Char('(')
+                        || c == QLatin1Char('[')) {
                         completeBracketPair(c);
                         ke->accept();
                         return true;
@@ -610,35 +768,110 @@ void CodeEditorWidget::completeBracketPair(const QChar open)
     m_editor->endUndoAction();
 }
 
-void CodeEditorWidget::triggerNamespaceCompletion()
+void CodeEditorWidget::showAutocompleteList(QStringList words, int alreadyTyped)
 {
-    // So C/C++ usa "::".
-    if (m_language != QLatin1String("cpp") || m_apiWords.isEmpty())
+    words.removeDuplicates();
+    words.removeAll(QString());
+    if (words.isEmpty())
         return;
+
+    m_editor->SendScintilla(QsciScintillaBase::SCI_AUTOCSETORDER,
+                            (unsigned long)QsciScintillaBase::SC_ORDER_PERFORMSORT);
+    m_editor->SendScintilla(QsciScintillaBase::SCI_AUTOCSETIGNORECASE, 1);
+    m_editor->SendScintilla(QsciScintillaBase::SCI_AUTOCSETSEPARATOR,
+                            (unsigned long)' ');
+    m_editor->cancelList();
+    m_autocBuffer = words.join(QLatin1Char(' ')).toUtf8();
+    m_editor->SendScintilla(QsciScintillaBase::SCI_AUTOCSHOW,
+                            static_cast<uintptr_t>(qMax(0, alreadyTyped)),
+                            m_autocBuffer.constData());
+}
+
+void CodeEditorWidget::triggerIdeCompletion(bool force)
+{
     int line = 0, index = 0;
     m_editor->getCursorPosition(&line, &index);
-    if (index < 3)
-        return;
-    // SCI_GETCHARAT usa offset FLAT do documento; converte (linha, coluna).
-    auto charAt = [this](int pos) {
-        return QChar(static_cast<ushort>(m_editor->SendScintilla(
-            QsciScintillaBase::SCI_GETCHARAT, (unsigned long)pos)));
+    QString lineText = m_editor->text(line);
+    while (lineText.endsWith(QLatin1Char('\n'))
+           || lineText.endsWith(QLatin1Char('\r')))
+        lineText.chop(1);
+    if (index > lineText.size())
+        index = lineText.size();
+    const QString left = lineText.left(index);
+
+    auto isIdent = [](QChar c) {
+        return c.isLetterOrNumber() || c == QLatin1Char('_');
     };
-    const int pos = m_editor->positionFromLineIndex(line, index);
-    if (charAt(pos - 1) != QLatin1Char(':')
-        || charAt(pos - 2) != QLatin1Char(':'))
+
+    int i = left.size();
+    while (i > 0 && isIdent(left.at(i - 1)))
+        --i;
+    const QString partial = left.mid(i);
+    QString qualifier;
+    if (i >= 2 && left.at(i - 1) == QLatin1Char(':')
+        && left.at(i - 2) == QLatin1Char(':')) {
+        int j = i - 2;
+        while (j > 0 && isIdent(left.at(j - 1)))
+            --j;
+        qualifier = left.mid(j, (i - 2) - j);
+    }
+
+    if (!qualifier.isEmpty()) {
+        if (m_language != QLatin1String("cpp"))
+            return;
+        QStringList words;
+        if (qualifier == QLatin1String("std")) {
+            words = m_stdWords;
+        } else {
+            for (const auto& scope : m_outline.scopes) {
+                if (scope.name != qualifier)
+                    continue;
+                for (const auto& m : scope.members)
+                    if (!words.contains(m.name))
+                        words.append(m.name);
+            }
+        }
+        if (words.isEmpty())
+            return;
+        if (!partial.isEmpty()) {
+            QStringList filtered;
+            for (const QString& w : words) {
+                if (w.startsWith(partial, Qt::CaseInsensitive))
+                    filtered.append(w);
+            }
+            words = filtered;
+        }
+        if (words.isEmpty()) {
+            if (m_editor->isListActive())
+                m_editor->cancelList();
+            return;
+        }
+        showAutocompleteList(words, partial.size());
         return;
-    const QChar before = charAt(pos - 3);
-    if (!before.isLetterOrNumber() && before != QLatin1Char('_')
-        && before != QLatin1Char('~'))
+    }
+
+    if (!force && partial.size() < 1)
         return;
-    // Mostra a lista completa de simbolos conhecidos via SCI_AUTOCSHOW
-    // (independe de foco/tecla-de-palavra, que o "std::" nao dispara).
+
+    m_editor->autoCompleteFromAll();
+    if (m_editor->isListActive())
+        return;
+
     QStringList words = m_apiWords;
-    words.sort();
-    const QByteArray list = words.join(QLatin1Char(' ')).toUtf8();
-    m_editor->SendScintilla(QsciScintillaBase::SCI_AUTOCSHOW, 0UL,
-                            list.constData());
+    if (m_language == QLatin1String("cpp")
+        && !words.contains(QStringLiteral("std")))
+        words.prepend(QStringLiteral("std"));
+    if (!partial.isEmpty()) {
+        QStringList filtered;
+        for (const QString& w : words) {
+            if (w.startsWith(partial, Qt::CaseInsensitive))
+                filtered.append(w);
+        }
+        words = filtered;
+    }
+    if (words.isEmpty() && !force)
+        return;
+    showAutocompleteList(words, partial.size());
 }
 
 // ---------------------------------------------------------------------------

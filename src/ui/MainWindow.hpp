@@ -90,6 +90,10 @@ private slots:
     void onProjectSettings();
 
 private:
+    //! Empurra compilador/flags/includeDirs/cache do projeto para o HeaderIndex
+    //! (intellisense de C++). Idempotente: pode chamar a cada abertura/ajuste.
+    void configureIntellisense();
+
     //! Grava o arquivo da aba atual (Save As para documentos novos).
     void saveCurrentDocument();
     void saveAllDocuments();

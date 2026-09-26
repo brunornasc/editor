@@ -3,6 +3,7 @@
 #include "editor/CodeOutlineParser.hpp"
 
 #include <Qsci/qsciscintilla.h>
+#include <QByteArray>
 #include <QPoint>
 #include <QStringList>
 #include <QWidget>
@@ -79,9 +80,8 @@ signals:
     void hoverWordRequested(const QString& word, const QPoint& globalPos);
 
 private slots:
-    //! Scan assincrono de #includes concluiu (atualiza o intellisense).
-    void onLanguageScanReady(const QString& filePath, const QString& language,
-                             const QStringList& extraWords);
+    //! O HeaderIndex preprocessou+indexou um include: entra no popup.
+    void onHeaderIndexed(const QString& includeSpec, bool ok);
     void onScopeSelected(int index);
     void onMemberSelected(int index);
     void onCursorPositionChanged(int line, int index);
@@ -98,10 +98,18 @@ private:
     void applyLanguage(const QString& language);
     //! (Re)prepara o QsciAPIs com a lista atual m_apiWords.
     void rebuildApis();
-    //! Solicita o scan assincrono de #includes (so quando ha o que escanear).
-    void requestLanguageScan();
-    //! Abre a lista de completacao quando acabou de digitar "x::".
-    void triggerNamespaceCompletion();
+    //! Monta a lista do popup "std::" (nomes reais vindos dos headers indexados).
+    void updateStdWords();
+    //! Le os #includes do buffer atual e agenda a indexacao dos que faltam.
+    void detectIncludes();
+    //! Agenda `detectIncludes` (o usuario pode estar no meio de "#include <vec").
+    void scheduleIncludeScan();
+    //! Refeita o popup com o que o HeaderIndex ja tem para este documento.
+    void applyIndexedSymbols();
+    //! Completar estilo IDE: Ctrl+Espaco, "ns::" ou prefixo de identificador.
+    void triggerIdeCompletion(bool force);
+    //! Abre a lista Scintilla (insere o item escolhido no cursor).
+    void showAutocompleteList(QStringList words, int alreadyTyped);
 
     //! Preenche a combo direita com as funcoes/metodos do escopo.
     void fillFunctionMembers(int scopeIdx);
@@ -117,10 +125,15 @@ private:
 
     QString m_filePath;
     QString m_language = QStringLiteral("cpp");
-    QStringList m_apiWords;            // default + scan (assincrono)
+    QStringList m_langKeywords;        // if/int/class... (sem membros de std)
+    QStringList m_apiWords;            // default + scan (completar geral)
+    QStringList m_stdWords;            // so membros do namespace std
+    QByteArray m_autocBuffer;          // buffer vivo p/ SCI_AUTOCSHOW
     editor::OutlineData m_outline;
     QColor m_errorColor = QColor(Qt::red);
     bool m_updatingNav = false;
+    QStringList m_indexedIncludes;   // specs deste documento ja indexados
+    QTimer* m_includeTimer = nullptr;
     QTimer* m_hoverTimer = nullptr;
     QString m_hoverWord;
     QPoint m_hoverPos;

@@ -23,6 +23,10 @@ struct Project {
     QString name;
     QString rootDir;      // diretorio absoluto do projeto
     QString compiler;     // identificador de toolchain ("g++","clang++",...)
+    //! Flags passadas ao preprocessador do intellisense ("-std=c++20", ...).
+    QStringList compilerFlags;
+    //! Diretorios de include extras, relativos a rootDir ("include", "src").
+    QStringList includeDirs;
     QString makeTarget;   // nome do executavel (padrao: nome do projeto)
     QStringList files;    // caminhos relativos a rootDir, separador '/'
     QStringList dependencies;  // requisitos Conan ("pacote/versao", ...)
@@ -41,6 +45,16 @@ struct Project {
 
     //! Caminho absoluto de um arquivo do projeto.
     QString fileName(const QString& rel) const;
+
+    //! includeDirs (relativos) resolvidos contra rootDir + os padroes
+    //! (raiz, include/, src/, inc/, third_party/include/).
+    QStringList resolvedIncludeDirs() const;
+
+    //! Flags do compilador + -I de cada includeDir, prontos para o `g++ -E`.
+    QStringList preprocessFlags() const;
+
+    //! Compiladores encontrados no PATH, com o do projeto primeiro se existir.
+    static QStringList detectCompilers();
 
     QString displayName() const { return name; }
     bool isValid() const { return !rootDir.isEmpty() && !name.isEmpty(); }
