@@ -80,6 +80,8 @@ add_executable(editor
         src/editor/IncludeResolver.cpp
         src/editor/HeaderIndex.hpp
         src/editor/HeaderIndex.cpp
+        src/lsp/LspClient.hpp
+        src/lsp/LspClient.cpp
         src/core/ThemeManager.cpp
         src/core/ThemeManager.hpp
         src/core/Keywords.cpp
